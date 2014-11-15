@@ -110,19 +110,19 @@
 #include <DallasTemperature.h>
 #include "DHT.h"
 
-const int UNO = 1;                                                      // Set to 0 if your not using the UNO bootloader (i.e using Duemilanove) - All Atmega's shipped from OpenEnergyMonitor come with Arduino Uno bootloader
-#include <avr/wdt.h>                                                    // the UNO bootloader 
-const boolean debug=1;                                       //Set to 1 to few debug serial output, turning debug off increases battery life
+const int UNO = 1;                          // Set to 0 if your not using the UNO bootloader (i.e using Duemilanove) - All Atmega's shipped from OpenEnergyMonitor come with Arduino Uno bootloader
+#include <avr/wdt.h>                        // the UNO bootloader 
+const boolean debug=0;                      //Set to 1 to few debug serial output, turning debug off increases battery life
 
 #define RF_freq RF12_433MHZ                 // Frequency of RF12B module can be RF12_433MHZ, RF12_868MHZ or RF12_915MHZ. You should use the one matching the module you have.
 const int nodeID = 19;                               // EmonTH temperature RFM12B node ID - should be unique on network
-const int networkGroup = 210;                // EmonTH RFM12B wireless network group - needs to be same as emonBase and emonGLCD
+const int networkGroup = 210;               // EmonTH RFM12B wireless network group - needs to be same as emonBase and emonGLCD
                                                                       // DS18B20 resolution 9,10,11 or 12bit corresponding to (0.5, 0.25, 0.125, 0.0625 degrees C LSB), lower resolution means lower power
 const int LEDpin = 9;                                                   //emonTH LED pin
 
 // Pulse counting settings 
-long pulseCount = 0;                                                    // Number of pulses, used to measure energy.
-unsigned long lastTime = 0;                                       // Used to measure power.                                               // power and energy                                                         // 1000 pulses/kwh = 1 pulse per wh - Number of pulses per wh - found or set on the meter.
+volatile long pulseCount = 0;               // Number of pulses
+volatile unsigned long lastTime = 0;        //                                                                                               // 1000 pulses/kwh = 1 pulse per wh - Number of pulses per wh - found or set on the meter.
 
 const int time_between_readings= 1;                                   // in minutes
 const int TEMPERATURE_PRECISION=11;                                   // 9 (93.8ms),10 (187.5ms) ,11 (375ms) or 12 (750ms) bits equal to resplution of 0.5C, 0.25C, 0.125C and 0.0625C
@@ -286,8 +286,6 @@ void setup()
   attachInterrupt(0, onPulse, FALLING);                                 // KWH interrupt attached to IRQ 0  = Digita 2 - hardwired to emonTx V3 terminal block 
   
   if (debug) delay(200);
-  // if (UNO) 
-  //  wdt_enable(WDTO_8S);
    
   digitalWrite(LED,LOW);
 } // end of setup
@@ -317,7 +315,14 @@ void readDHT22()
   float temp=(dht.readTemperature());
   if ((temp<85.0) && (temp>-40.0)) 
     emonth.temp = (temp*10);
-
+  // Check if any reads failed and exit early (to try again).
+  if (debug )
+  {
+    if (isnan(temp))
+      Serial.println("Failed to read from DHT sensor!"); 
+    else
+      Serial.print("Raw temp: "); Serial.println(temp);
+  }
   digitalWrite(DHT22_PWR, LOW);
 }
 
@@ -398,39 +403,52 @@ void loop()
  
   sendRadio();  
   
-  dodelay(time_between_readings*/*60*/5*1000);
+  dodelay(time_between_readings*/*60*/8*1000);
 }
 
-void dodelay(unsigned int ms)
+void dodelay(unsigned long ms)
 {
-  delay(ms);
-  /*
-  byte oldADCSRA=ADCSRA;
-  byte oldADCSRB=ADCSRB;
-  byte oldADMUX=ADMUX;
-      
-  Sleepy::loseSomeTime(ms); // JeeLabs power save function: enter low power mode for x seconds (valid range 16-65000 ms)
-      
-  ADCSRA=oldADCSRA;         // restore ADC state
-  ADCSRB=oldADCSRB;
-  ADMUX=oldADMUX;
-  */
+  // We need to modify the normal dodelay function here found in the examples
+  // because we will be 'interrupted' by the interrupts before the timer
+  // has expired, so then we need to power down for the remainder of the expected time again.
+  unsigned long expectedEndMillis = millis() + ms;
+  byte success = 1;
+  do 
+  {
+    // Save Analog to Digital Converter registers - why? I know not!
+    byte oldADCSRA=ADCSRA;
+    byte oldADCSRB=ADCSRB;
+    byte oldADMUX=ADMUX;
+    
+    success = Sleepy::loseSomeTime(ms); // JeeLabs power save function: enter low power mode for x seconds (valid range 16-65000 ms)    
+    ADCSRA=oldADCSRA;         // restore ADC state
+    ADCSRB=oldADCSRB;
+    ADMUX=oldADMUX;
+    if (!success)
+    {
+      unsigned long current = millis();
+      ms = (expectedEndMillis > current) ? expectedEndMillis - current : 0;
+      if (debug)
+      {
+        Serial.println("Not successful");Serial.print(current); Serial.print("ms remaining: "); Serial.println(ms);
+        delay(10);
+      }
+    }
+  }
+  while (!success && ms >= 16);
+  // Minimum power down time is 16 millis.
 }
 
 // The interrupt routine - runs each time a falling edge of a pulse is detected
 void onPulse()                  
 {
-  // Firstly, disable further interrupts here (as a kind of switch debouncing).
-  detachInterrupt(0);
+  // No need to disable interrupts here as they are already disabled.
   unsigned long pulseTime = micros();
-  if ((pulseTime - lastTime) > 500000) // 0.5s
+  if ((lastTime > pulseTime) || (pulseTime - lastTime > 500000)) // 0.5s or wrapped!
   {
     lastTime = pulseTime;        //used to measure time between pulses.
     ++pulseCount;
-    Serial.print("Incremented:");Serial.println(pulseCount);
   }
-  
-  attachInterrupt(0, onPulse, FALLING);
 }
 
 
