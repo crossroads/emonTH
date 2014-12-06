@@ -115,7 +115,7 @@ const int UNO = 1;                          // Set to 0 if your not using the UN
 const boolean debug=0;                      //Set to 1 to few debug serial output, turning debug off increases battery life
 
 #define RF_freq RF12_433MHZ                 // Frequency of RF12B module can be RF12_433MHZ, RF12_868MHZ or RF12_915MHZ. You should use the one matching the module you have.
-const int nodeID = 19;                               // EmonTH temperature RFM12B node ID - should be unique on network
+const int nodeID = 21;                               // EmonTH temperature RFM12B node ID - should be unique on network
 const int networkGroup = 210;               // EmonTH RFM12B wireless network group - needs to be same as emonBase and emonGLCD
                                                                       // DS18B20 resolution 9,10,11 or 12bit corresponding to (0.5, 0.25, 0.125, 0.0625 degrees C LSB), lower resolution means lower power
 const int LEDpin = 9;                                                   //emonTH LED pin
@@ -224,7 +224,7 @@ void setup()
   // Test for presence of DHT22
   //################################################################################################################################
   digitalWrite(DHT22_PWR,HIGH);
-  dodelay(2000);                                                        // wait 2s for DH22 to warm up
+  doDelayInternal(2000);                                                // wait 2s for DH22 to warm up
   dht.begin();
   float h = dht.readHumidity();                                         // Read Humidity
   float t = dht.readTemperature();                                      // Read Temperature
@@ -283,6 +283,7 @@ void setup()
   // if (debug==1) delay(200);
   
   // Pulse setup start!
+  pinMode(2, INPUT_PULLUP); // We use pullup to reduce bouncing.
   attachInterrupt(0, onPulse, FALLING);                                 // KWH interrupt attached to IRQ 0  = Digita 2 - hardwired to emonTx V3 terminal block 
   
   if (debug) delay(200);
@@ -292,10 +293,11 @@ void setup()
 
 void readDS18B20()
 {
-  digitalWrite(DS18B20_PWR, HIGH); dodelay(50); 
-  for(int j=0;j<numSensors;j++) sensors.setResolution(allAddress[j], TEMPERATURE_PRECISION);      // and set the a to d conversion resolution of each.
+  digitalWrite(DS18B20_PWR, HIGH); doDelay(50); 
+  for (int j=0;j<numSensors;j++) 
+    sensors.setResolution(allAddress[j], TEMPERATURE_PRECISION);      // and set the a to d conversion resolution of each.
   sensors.requestTemperatures();                                        // Send the command to get temperatures
-  dodelay(ASYNC_DELAY); //Must wait for conversion, since we use ASYNC mode
+  doDelay(ASYNC_DELAY); //Must wait for conversion, since we use ASYNC mode
   float temp=(sensors.getTempC(allAddress[0]));
   digitalWrite(DS18B20_PWR, LOW);
   if ((temp < 125.0) && (temp > -40.0))
@@ -307,8 +309,9 @@ void readDS18B20()
 
 void readDHT22()
 {
+  if (debug) Serial.println("readDHT22");
   digitalWrite(DHT22_PWR, HIGH);                                                                                                  // Send the command to get temperatures
-  dodelay(2000);                                             //sleep for 1.5 - 2's to allow sensor to warm up
+  doDelayInternal(2000);                                             //sleep for 1.5 - 2's to allow sensor to warm up
   // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
   emonth.humidity = ((dht.readHumidity())*10);
 
@@ -358,6 +361,11 @@ void doDebug()
 
 void sendRadio()
 {
+  if (debug)
+  {  
+    Serial.println("SendRadio");
+    delay(20);
+  }
   power_spi_enable();  
   rf12_sleep(RF12_WAKEUP);
   rf12_sendNow(0, &emonth, sizeof emonth);
@@ -401,17 +409,36 @@ void loop()
   
   doDebug();
  
-  sendRadio();  
+  sendRadio();
   
-  dodelay(time_between_readings*/*60*/8*1000);
+  doDelay(58000); // 58 seconds, as with the 2 second delay for reading makes a minute.
 }
 
-void dodelay(unsigned long ms)
+void doDelay(unsigned long ms)
+{
+  // because the timing of loseSomeTime is very approximate, we only want to power down in steps of 1s 
+  // to increase timing accuracy.
+  const unsigned long SLEEP_TIME = 5000;
+  const unsigned long reps = ms / SLEEP_TIME;
+  const unsigned long extra = ms % SLEEP_TIME;
+  for (int i = 0; i != reps; ++i)
+  {
+    doDelayInternal(SLEEP_TIME);
+  }
+  doDelayInternal(extra);
+}
+
+void doDelayInternal(unsigned long ms)  
 {
   // We need to modify the normal dodelay function here found in the examples
   // because we will be 'interrupted' by the interrupts before the timer
   // has expired, so then we need to power down for the remainder of the expected time again.
-  unsigned long expectedEndMillis = millis() + ms;
+  unsigned long millisOutput = millis();
+  unsigned long expectedEndMillis = millisOutput + ms;
+  if (debug)
+  {
+    Serial.print(ms);Serial.print(", mo:");Serial.print(millisOutput);Serial.print(", e:");Serial.print(expectedEndMillis);Serial.println(" for dodelay");Serial.flush();
+  }
   byte success = 1;
   do 
   {
@@ -430,8 +457,7 @@ void dodelay(unsigned long ms)
       ms = (expectedEndMillis > current) ? expectedEndMillis - current : 0;
       if (debug)
       {
-        Serial.println("Not successful");Serial.print(current); Serial.print("ms remaining: "); Serial.println(ms);
-        delay(10);
+        Serial.print("Not successful: ");Serial.print(current); Serial.print(" ms remaining: "); Serial.println(ms);Serial.flush();
       }
     }
   }
